@@ -1,0 +1,91 @@
+name: Build Siya AI APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Siya.AI.zip'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Android project ZIP
+        run: |
+          mkdir -p extracted
+          unzip -q Siya.AI.zip -d extracted
+          echo "Extracted files:"
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Locate project root
+        id: project
+        shell: bash
+        run: |
+          if find extracted -name pubspec.yaml -print -quit | grep -q .; then
+            ROOT="$(dirname "$(find extracted -name pubspec.yaml -print -quit)")"
+            echo "type=flutter" >> "$GITHUB_OUTPUT"
+          elif find extracted -name gradlew -print -quit | grep -q .; then
+            ROOT="$(dirname "$(find extracted -name gradlew -print -quit)")"
+            echo "type=gradle" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::ZIP does not contain a Flutter pubspec.yaml or Gradle wrapper"
+            exit 1
+          fi
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "Project root: $ROOT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        if: steps.project.outputs.type == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.3'
+          channel: stable
+
+      - name: Prepare Android SDK compatibility
+        if: steps.project.outputs.type == 'flutter'
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          find . -type f \( -name build.gradle -o -name build.gradle.kts \) -print0 | while IFS= read -r -d '' f; do
+            sed -i -E 's/compileSdk[[:space:]]*=[[:space:]]*34/compileSdk = 35/g; s/compileSdk[[:space:]]+34/compileSdk 35/g; s/com.android.tools.build:gradle:8\.4\.0/com.android.tools.build:gradle:8.6.1/g' "$f"
+          done
+
+      - name: Build Flutter APK
+        if: steps.project.outputs.type == 'flutter'
+        working-directory: ${{ steps.project.outputs.root }}
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      - name: Build Gradle APK
+        if: steps.project.outputs.type == 'gradle'
+        working-directory: ${{ steps.project.outputs.root }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Siya-AI-APK
+          path: |
+            extracted/**/build/app/outputs/flutter-apk/*.apk
+            extracted/**/app/build/outputs/apk/**/*.apk
+            extracted/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
